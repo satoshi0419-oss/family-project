@@ -42,8 +42,8 @@ function supabaseStore() {
       must(await sb.from('family_members').delete().eq('family_id', fid).eq('user_id', data.user.id));
     },
     async projects(fid) { return must(await sb.from('cook_projects').select('*').eq('family_id', fid).order('created_at', { ascending: false })); },
-    async createProject(fid, title, goalAt) {
-      return must(await sb.from('cook_projects').insert({ family_id: fid, title, goal_at: goalAt }).select().single());
+    async createProject(fid, title, goalAt, settings) {
+      return must(await sb.from('cook_projects').insert({ family_id: fid, title, goal_at: goalAt, settings }).select().single());
     },
     async saveSettings(pid, settings) { must(await sb.from('cook_projects').update({ settings }).eq('id', pid)); },
     async deleteProject(pid) { must(await sb.from('cook_projects').delete().eq('id', pid)); },
@@ -51,11 +51,19 @@ function supabaseStore() {
     async saveRun(run) { must(await sb.from('task_runs').upsert(run, { onConflict: 'project_id,task_id' })); },
     // 取り消しは行を消さずに空にする(消すとリアルタイム同期で他の端末に届かないため)
     async deleteRun(pid, tid) { must(await sb.from('task_runs').update({ started_at: null, ended_at: null }).eq('project_id', pid).eq('task_id', tid)); },
+    async people(fid) { return must(await sb.from('family_people').select('*').eq('family_id', fid).order('sort').order('created_at')); },
+    async addPerson(row) { return must(await sb.from('family_people').insert(row).select().single()); },
+    async updatePerson(id, patch) { must(await sb.from('family_people').update(patch).eq('id', id)); },
+    async deletePerson(id) { must(await sb.from('family_people').delete().eq('id', id)); },
+    async skillLog(fid) { return must(await sb.from('skill_log').select('*').eq('family_id', fid).order('created_at', { ascending: false })); },
+    async addSkillLog(row) { must(await sb.from('skill_log').insert(row)); },
     subscribe(fid, onChange) {
       if (channel) sb.removeChannel(channel);
       channel = sb.channel('family-' + fid)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'task_runs', filter: `family_id=eq.${fid}` }, onChange)
         .on('postgres_changes', { event: '*', schema: 'public', table: 'cook_projects', filter: `family_id=eq.${fid}` }, onChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'family_people', filter: `family_id=eq.${fid}` }, onChange)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'skill_log', filter: `family_id=eq.${fid}` }, onChange)
         .subscribe();
     },
   };
@@ -65,7 +73,7 @@ function supabaseStore() {
 function demoStore() {
   const K = 'family-cooking-demo';
   const load = () => { try { return JSON.parse(localStorage.getItem(K)) || {}; } catch { return {}; } };
-  let db = { family: null, projects: [], runs: [], ...load() };
+  let db = { family: null, projects: [], runs: [], people: [], skillLog: [], ...load() };
   const bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel(K) : null;
   let listener = null;
   const commit = () => { try { localStorage.setItem(K, JSON.stringify(db)); } catch {} bc?.postMessage('x'); };
@@ -84,10 +92,10 @@ function demoStore() {
       if (db.family && db.family.family_code === code.toUpperCase().trim() && db.family.pass === pass) return db.family.id;
       throw new Error('お試しモードでは、この端末で作った家族にだけ入れます');
     },
-    async leaveFamily() { db = { family: null, projects: [], runs: [] }; commit(); },
+    async leaveFamily() { db = { family: null, projects: [], runs: [], people: [], skillLog: [] }; commit(); },
     async projects() { return [...db.projects].sort((a, b) => b.created_at.localeCompare(a.created_at)); },
-    async createProject(fid, title, goalAt) {
-      const p = { id: uid(), family_id: fid, title, goal_at: goalAt, template: 'curry', settings: { caps: { peeler: 1, board: 1, stove: 2 }, correct: false }, created_at: new Date().toISOString() };
+    async createProject(fid, title, goalAt, settings) {
+      const p = { id: uid(), family_id: fid, title, goal_at: goalAt, template: 'curry', settings: settings || {}, created_at: new Date().toISOString() };
       db.projects.push(p); commit(); return p;
     },
     async saveSettings(pid, settings) { const p = db.projects.find(x => x.id === pid); if (p) p.settings = settings; commit(); },
@@ -99,6 +107,12 @@ function demoStore() {
       commit();
     },
     async deleteRun(pid, tid) { db.runs = db.runs.filter(r => !(r.project_id === pid && r.task_id === tid)); commit(); },
+    async people() { return [...db.people].sort((a, b) => a.sort - b.sort); },
+    async addPerson(row) { const p = { id: uid(), created_at: new Date().toISOString(), sort: 0, color: 0, skills: {}, ...row }; db.people.push(p); commit(); return p; },
+    async updatePerson(id, patch) { const p = db.people.find(x => x.id === id); if (p) Object.assign(p, patch); commit(); },
+    async deletePerson(id) { db.people = db.people.filter(p => p.id !== id); commit(); },
+    async skillLog() { return [...db.skillLog].sort((a, b) => b.created_at.localeCompare(a.created_at)); },
+    async addSkillLog(row) { db.skillLog.push({ id: uid(), created_at: new Date().toISOString(), ...row }); commit(); },
     subscribe(fid, onChange) { listener = onChange; },
   };
 }
